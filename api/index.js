@@ -3,7 +3,6 @@ import { GoogleGenAI } from '@google/genai';
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 export default async function handler(req, res) {
-  // Проверка доступности через браузер (GET-запрос)
   if (req.method !== 'POST') {
     return res.status(200).send('Webhook is alive');
   }
@@ -11,7 +10,6 @@ export default async function handler(req, res) {
   const { request, session, state, version = '1.0' } = req.body || {};
   const userText = request?.command || request?.original_utterance || '';
 
-  // Приветствие при старте
   if (session?.new && !userText) {
     return res.status(200).json({
       version,
