@@ -6,7 +6,7 @@ export default async function handler(req, res) {
   const { request, session, state, version = '1.0' } = req.body || {};
   const userText = request?.command || request?.original_utterance || '';
 
-  // Приветствие при старте сессии
+  // Мгновенное приветствие при старте сессии
   if (session?.new && !userText) {
     return res.status(200).json({
       version,
@@ -22,7 +22,7 @@ export default async function handler(req, res) {
   history.push({ role: 'user', text: userText });
 
   const conversation = history
-    .slice(-6)
+    .slice(-4)
     .map(m => `${m.role === 'user' ? 'Пользователь' : 'Ассистент'}: ${m.text}`)
     .join('\n');
 
@@ -33,32 +33,27 @@ export default async function handler(req, res) {
       version,
       session_state: { history },
       response: {
-        text: 'Ошибка: API-ключ GEMINI_API_KEY не задан в Vercel Settings -> Environments.',
+        text: 'API-ключ не настроен.',
         end_session: false
       }
     });
   }
 
-  const promptText = `Контекст разговора:\n${conversation}\n\nОтветь на последнюю реплику пользователя.`;
+  const promptText = `Контекст:\n${conversation}\n\nОтветь на последнюю реплику кратко (1-2 предложения), емко для голоса. Без markdown.`;
 
-  // Функция запроса к Gemini API
-  async function callGemini(useSearch = true) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey}`;
+  // Список моделей по приоритету (если одна перегружена, берется следующая)
+  const models = ['gemini-2.5-flash', 'gemini-3.8-flash'];
 
+  async function requestModel(modelName) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
     const payload = {
       system_instruction: {
-        parts: [{
-          text: 'Ты голосовой ассистент для умной колонки Алиса. Отвечай кратко (2-3 емких предложения), живо, без списков, жирного шрифта и Markdown-разметки.'
-        }]
+        parts: [{ text: 'Ты голосовой ассистент Алиса. Отвечай кратко, без списков и спецсимволов.' }]
       },
       contents: [{
         parts: [{ text: promptText }]
       }]
     };
-
-    if (useSearch) {
-      payload.tools = [{ googleSearch: {} }];
-    }
 
     const response = await fetch(url, {
       method: 'POST',
@@ -71,41 +66,41 @@ export default async function handler(req, res) {
   }
 
   try {
-    // 1. Пробуем запрос с поиском Google
-    let resData = await callGemini(true);
+    let result = null;
 
-    // 2. Если Google вернул ошибку из-за поиска, пробуем чистый запрос
-    if (!resData.ok) {
-      console.warn('Search tool failed, retrying without search:', resData.data);
-      resData = await callGemini(false);
+    // Перебираем модели, пока одна не ответит без ошибки перегрузки
+    for (const model of models) {
+      result = await requestModel(model);
+      if (result.ok) break;
+      console.warn(`Model ${model} failed, trying next...`);
     }
 
-    if (!resData.ok) {
-      const errDetail = resData.data?.error?.message || JSON.stringify(resData.data);
-      throw new Error(errDetail);
+    if (!result || !result.ok) {
+      const msg = result?.data?.error?.message || 'Сервис перегружен.';
+      throw new Error(msg);
     }
 
     const replyText =
-      resData.data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ||
+      result.data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ||
       'Не удалось сформировать ответ.';
 
     history.push({ role: 'assistant', text: replyText });
 
     return res.status(200).json({
       version,
-      session_state: { history: history.slice(-6) },
+      session_state: { history: history.slice(-4) },
       response: {
         text: replyText,
         end_session: false
       }
     });
   } catch (err) {
-    console.error('Final Catch Error:', err);
+    console.error('Handler error:', err);
     return res.status(200).json({
       version,
       session_state: { history },
       response: {
-        text: `Ошибка модели: ${err.message.slice(0, 150)}`,
+        text: 'Сервер сейчас сильно нагружен, повторите вопрос еще раз.',
         end_session: false
       }
     });
