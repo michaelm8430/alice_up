@@ -6,7 +6,7 @@ export default async function handler(req, res) {
   const { request, session, state, version = '1.0' } = req.body || {};
   const userText = request?.command || request?.original_utterance || '';
 
-  // Моментальный ответ на запуск навыка
+  // Приветствие при старте новой сессии
   if (session?.new && !userText) {
     return res.status(200).json({
       version,
@@ -30,8 +30,19 @@ export default async function handler(req, res) {
     });
   }
 
-  const history = state?.session?.history || [];
-  history.push({ role: 'user', text: userText });
+  // Считываем предыдущую историю диалога из сессии
+  const rawHistory = state?.session?.history || [];
+  
+  // Добавляем текущее сообщение пользователя
+  const updatedHistory = [...rawHistory, { role: 'user', text: userText }];
+
+  // Формируем историю для Gemini в правильном формате ролей (user / model)
+  // Берем последние 4 сообщения, чтобы не раздувать запрос и сохранять скорость
+  const recentHistory = updatedHistory.slice(-4);
+  const contents = recentHistory.map(item => ({
+    role: item.role === 'assistant' ? 'model' : 'user',
+    parts: [{ text: item.text }]
+  }));
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 2500);
@@ -45,13 +56,13 @@ export default async function handler(req, res) {
       signal: controller.signal,
       body: JSON.stringify({
         systemInstruction: {
-          parts: [{ text: 'Ты голосовой помощник Алиса. Отвечай кратко: 1-2 простых предложения для озвучки, без спецсимволов и markdown.' }]
+          parts: [{ 
+            text: 'Ты голосовой помощник Алиса. Помни весь контекст предыдущих реплик диалога. Отвечай кратко: 1-2 простых предложения для озвучки голосом. Без списков, markdown и спецсимволов.' 
+          }]
         },
-        contents: [{
-          parts: [{ text: userText }]
-        }],
+        contents: contents,
         generationConfig: {
-          maxOutputTokens: 70,
+          maxOutputTokens: 90,
           temperature: 0.6
         }
       })
@@ -69,11 +80,13 @@ export default async function handler(req, res) {
       data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ||
       'Не удалось получить ответ.';
 
-    history.push({ role: 'assistant', text: replyText });
+    // Сохраняем ответ модели в историю
+    updatedHistory.push({ role: 'assistant', text: replyText });
 
     return res.status(200).json({
       version,
-      session_state: { history: history.slice(-2) },
+      // Возвращаем обновленную историю в Яндекс Диалоги
+      session_state: { history: updatedHistory.slice(-4) },
       response: {
         text: replyText,
         end_session: false
@@ -85,11 +98,11 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       version,
-      session_state: { history },
+      session_state: { history: updatedHistory },
       response: {
         text: err.name === 'AbortError'
-          ? 'Нейросеть отвечает чуть дольше обычного, спросите ещё раз.'
-          : `Ошибка: ${err.message.slice(0, 120)}`,
+          ? 'Нейросеть отвечает чуть дольше обычного, повторите вопрос.'
+          : `Ошибка: ${err.message.slice(0, 100)}`,
         end_session: false
       }
     });
