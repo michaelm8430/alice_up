@@ -33,10 +33,10 @@ export default async function handler(req, res) {
   history.push({ role: 'user', text: userText });
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 2700);
+  const timeoutId = setTimeout(() => controller.abort(), 2600);
 
   try {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse&key=${apiKey}`;
 
     const response = await fetch(url, {
       method: 'POST',
@@ -44,36 +44,64 @@ export default async function handler(req, res) {
       signal: controller.signal,
       body: JSON.stringify({
         systemInstruction: {
-          parts: [{ text: 'Ты голосовой помощник Алиса. Отвечай кратко: 1-2 простых предложения для озвучки голосом. Без списков и спецсимволов.' }]
+          parts: [{ text: 'Ты Алиса. Ответь кратко в 1 предложение для голоса, без markdown и спецсимволов.' }]
         },
         contents: [{
           parts: [{ text: userText }]
         }],
         generationConfig: {
-          maxOutputTokens: 80,
-          temperature: 0.6
+          maxOutputTokens: 60,
+          temperature: 0.5
         }
       })
     });
 
-    clearTimeout(timeoutId);
-
-    const data = await response.json();
-
-    if (!response.ok || data.error) {
-      const errMsg = data?.error?.message || 'Ошибка сервиса';
-      throw new Error(errMsg);
+    if (!response.ok) {
+      const errJson = await response.json().catch(() => ({}));
+      throw new Error(errJson?.error?.message || `HTTP ${response.status}`);
     }
 
-    const replyText =
-      data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ||
-      'Не удалось получить ответ.';
+    // Читаем потоковые данные до первого законченного фрагмента
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let accumulatedText = '';
 
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value, { stream: true });
+      const lines = chunk.split('\n');
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          try {
+            const parsed = JSON.parse(line.slice(6));
+            const partText = parsed?.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (partText) {
+              accumulatedText += partText;
+            }
+          } catch {
+            // Пропускаем неполные чанки
+          }
+        }
+      }
+
+      // Как только получено законченное предложение, сразу завершаем чтение
+      if (accumulatedText.length > 20 && /[.!?]\s*$/.test(accumulatedText.trim())) {
+        reader.cancel();
+        break;
+      }
+    }
+
+    clearTimeout(timeoutId);
+
+    const replyText = accumulatedText.trim() || 'Не удалось сформировать ответ.';
     history.push({ role: 'assistant', text: replyText });
 
     return res.status(200).json({
       version,
-      session_state: { history: history.slice(-3) },
+      session_state: { history: history.slice(-2) },
       response: {
         text: replyText,
         end_session: false
@@ -81,7 +109,7 @@ export default async function handler(req, res) {
     });
   } catch (err) {
     clearTimeout(timeoutId);
-    console.error('Model call error:', err);
+    console.error('Stream error:', err);
 
     return res.status(200).json({
       version,
@@ -89,7 +117,7 @@ export default async function handler(req, res) {
       response: {
         text: err.name === 'AbortError'
           ? 'Нейросеть отвечает чуть дольше обычного, спросите ещё раз.'
-          : 'Сервер сейчас под нагрузкой, повторите запрос.',
+          : `Ошибка: ${err.message.slice(0, 100)}`,
         end_session: false
       }
     });
