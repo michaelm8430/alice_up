@@ -6,7 +6,7 @@ export default async function handler(req, res) {
   const { request, session, state, version = '1.0' } = req.body || {};
   const userText = request?.command || request?.original_utterance || '';
 
-  // Мгновенный ответ на приветствие без обращения к нейросети
+  // Приветствие при старте сессии
   if (session?.new && !userText) {
     return res.status(200).json({
       version,
@@ -33,7 +33,7 @@ export default async function handler(req, res) {
   const history = state?.session?.history || [];
   history.push({ role: 'user', text: userText });
 
-  const conversation = history
+  const promptText = history
     .slice(-3)
     .map(m => `${m.role === 'user' ? 'Пользователь' : 'Ассистент'}: ${m.text}`)
     .join('\n');
@@ -42,32 +42,42 @@ export default async function handler(req, res) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey}`;
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 2400); // прерываем, если нейросеть думает дольше 2.4 сек
+    const timeoutId = setTimeout(() => controller.abort(), 2400);
 
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: controller.signal,
       body: JSON.stringify({
-        system_instruction: {
-          parts: [{ text: 'Ты голосовой помощник Алиса. Отвечай кратко: 1-2 простых предложения для озвучки, без форматирования и markdown.' }]
+        systemInstruction: {
+          parts: [{ text: 'Ты голосовой помощник Алиса. Отвечай кратко: 1-2 предложения, просто и понятно для голоса, без markdown.' }]
         },
         contents: [{
-          parts: [{ text: conversation }]
-        }],
-        generationConfig: {
-          maxOutputTokens: 120,
-          temperature: 0.7
-        }
+          parts: [{ text: promptText }]
+        }]
       })
     });
 
     clearTimeout(timeoutId);
 
     const data = await response.json();
+
+    // Если Google вернул ошибку, сразу показываем её текст в ответе
+    if (!response.ok || data.error) {
+      const errorMsg = data.error?.message || JSON.stringify(data);
+      return res.status(200).json({
+        version,
+        session_state: { history },
+        response: {
+          text: `Ошибка от Google: ${errorMsg.slice(0, 180)}`,
+          end_session: false
+        }
+      });
+    }
+
     const replyText =
       data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ||
-      'Не удалось получить ответ, попробуйте спросить иначе.';
+      'Ответ пустой.';
 
     history.push({ role: 'assistant', text: replyText });
 
@@ -80,13 +90,12 @@ export default async function handler(req, res) {
       }
     });
   } catch (err) {
-    console.error('API Error:', err);
-
+    console.error('Request error:', err);
     return res.status(200).json({
       version,
       session_state: { history },
       response: {
-        text: 'Сервер думал слишком долго. Спросите, пожалуйста, ещё раз.',
+        text: `Сбой запроса: ${err.message?.slice(0, 150)}`,
         end_session: false
       }
     });
