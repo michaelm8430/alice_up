@@ -43,7 +43,7 @@ export default async function handler(req, res) {
 
   // Функция запроса к Gemini API
   async function callGemini(useSearch = true) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey}`;
 
     const payload = {
       system_instruction: {
