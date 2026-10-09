@@ -23,7 +23,7 @@ export default async function handler(req, res) {
       version,
       session_state: state?.session || {},
       response: {
-        text: 'API-ключ не настроен.',
+        text: 'API-ключ не настроен в Vercel.',
         end_session: false
       }
     });
@@ -33,10 +33,10 @@ export default async function handler(req, res) {
   history.push({ role: 'user', text: userText });
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 2500);
+  const timeoutId = setTimeout(() => controller.abort(), 2700);
 
   try {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey}`;
 
     const response = await fetch(url, {
       method: 'POST',
@@ -44,14 +44,14 @@ export default async function handler(req, res) {
       signal: controller.signal,
       body: JSON.stringify({
         systemInstruction: {
-          parts: [{ text: 'Ты Алиса. Отвечай ультра-кратко: ровно 1 предложение, без markdown.' }]
+          parts: [{ text: 'Ты голосовой помощник Алиса. Отвечай кратко: 1-2 простых предложения для озвучки голосом. Без списков и спецсимволов.' }]
         },
         contents: [{
           parts: [{ text: userText }]
         }],
         generationConfig: {
-          maxOutputTokens: 60,
-          temperature: 0.5
+          maxOutputTokens: 80,
+          temperature: 0.6
         }
       })
     });
@@ -61,7 +61,8 @@ export default async function handler(req, res) {
     const data = await response.json();
 
     if (!response.ok || data.error) {
-      throw new Error(data.error?.message || 'API error');
+      const errMsg = data?.error?.message || 'Ошибка сервиса';
+      throw new Error(errMsg);
     }
 
     const replyText =
@@ -72,7 +73,7 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       version,
-      session_state: { history: history.slice(-2) },
+      session_state: { history: history.slice(-3) },
       response: {
         text: replyText,
         end_session: false
@@ -80,15 +81,15 @@ export default async function handler(req, res) {
     });
   } catch (err) {
     clearTimeout(timeoutId);
-    console.error('Error:', err);
+    console.error('Model call error:', err);
 
     return res.status(200).json({
       version,
       session_state: { history },
       response: {
-        text: err.name === 'AbortError' 
-          ? 'Сеть ответила слишком медленно. Спросите еще раз.' 
-          : `Ошибка: ${err.message.slice(0, 100)}`,
+        text: err.name === 'AbortError'
+          ? 'Нейросеть отвечает чуть дольше обычного, спросите ещё раз.'
+          : 'Сервер сейчас под нагрузкой, повторите запрос.',
         end_session: false
       }
     });
