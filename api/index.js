@@ -6,7 +6,7 @@ export default async function handler(req, res) {
   const { request, session, state, version = '1.0' } = req.body || {};
   const userText = request?.command || request?.original_utterance || '';
 
-  // Мгновенное приветствие при старте сессии
+  // Мгновенный ответ на приветствие без обращения к нейросети
   if (session?.new && !userText) {
     return res.status(200).json({
       version,
@@ -18,89 +18,75 @@ export default async function handler(req, res) {
     });
   }
 
-  const history = state?.session?.history || [];
-  history.push({ role: 'user', text: userText });
-
-  const conversation = history
-    .slice(-4)
-    .map(m => `${m.role === 'user' ? 'Пользователь' : 'Ассистент'}: ${m.text}`)
-    .join('\n');
-
   const apiKey = process.env.GEMINI_API_KEY?.trim();
-
   if (!apiKey) {
     return res.status(200).json({
       version,
-      session_state: { history },
+      session_state: state?.session || {},
       response: {
-        text: 'API-ключ не настроен.',
+        text: 'API-ключ не настроен в Vercel.',
         end_session: false
       }
     });
   }
 
-  const promptText = `Контекст:\n${conversation}\n\nОтветь на последнюю реплику кратко (1-2 предложения), емко для голоса. Без markdown.`;
+  const history = state?.session?.history || [];
+  history.push({ role: 'user', text: userText });
 
-  // Список моделей по приоритету (если одна перегружена, берется следующая)
-  const models = ['gemini-2.5-flash', 'gemini-3.8-flash'];
+  const conversation = history
+    .slice(-3)
+    .map(m => `${m.role === 'user' ? 'Пользователь' : 'Ассистент'}: ${m.text}`)
+    .join('\n');
 
-  async function requestModel(modelName) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
-    const payload = {
-      system_instruction: {
-        parts: [{ text: 'Ты голосовой ассистент Алиса. Отвечай кратко, без списков и спецсимволов.' }]
-      },
-      contents: [{
-        parts: [{ text: promptText }]
-      }]
-    };
+  try {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey}`;
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 2400); // прерываем, если нейросеть думает дольше 2.4 сек
 
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+      signal: controller.signal,
+      body: JSON.stringify({
+        system_instruction: {
+          parts: [{ text: 'Ты голосовой помощник Алиса. Отвечай кратко: 1-2 простых предложения для озвучки, без форматирования и markdown.' }]
+        },
+        contents: [{
+          parts: [{ text: conversation }]
+        }],
+        generationConfig: {
+          maxOutputTokens: 120,
+          temperature: 0.7
+        }
+      })
     });
 
+    clearTimeout(timeoutId);
+
     const data = await response.json();
-    return { ok: response.ok, data };
-  }
-
-  try {
-    let result = null;
-
-    // Перебираем модели, пока одна не ответит без ошибки перегрузки
-    for (const model of models) {
-      result = await requestModel(model);
-      if (result.ok) break;
-      console.warn(`Model ${model} failed, trying next...`);
-    }
-
-    if (!result || !result.ok) {
-      const msg = result?.data?.error?.message || 'Сервис перегружен.';
-      throw new Error(msg);
-    }
-
     const replyText =
-      result.data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ||
-      'Не удалось сформировать ответ.';
+      data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ||
+      'Не удалось получить ответ, попробуйте спросить иначе.';
 
     history.push({ role: 'assistant', text: replyText });
 
     return res.status(200).json({
       version,
-      session_state: { history: history.slice(-4) },
+      session_state: { history: history.slice(-3) },
       response: {
         text: replyText,
         end_session: false
       }
     });
   } catch (err) {
-    console.error('Handler error:', err);
+    console.error('API Error:', err);
+
     return res.status(200).json({
       version,
       session_state: { history },
       response: {
-        text: 'Сервер сейчас сильно нагружен, повторите вопрос еще раз.',
+        text: 'Сервер думал слишком долго. Спросите, пожалуйста, ещё раз.',
         end_session: false
       }
     });
